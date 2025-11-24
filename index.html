@@ -66,4 +66,396 @@
   <section class="card">
     <h2>1) Input Schedule (Compact Line Codes)</h2>
     <div class="small">
-      Paste one unit per line using <b>pipe-d
+      Paste one unit per line using <b>pipe-delimited</b> tokens. No spaces required.
+      Stable, computer-first schema:
+      <br/><br/>
+      <code>
+        TAG | FAMILY | SIZECODE | HEATTYPE | HEATCAP | VOLT | DRIVE | FILTER | DUCT
+      </code>
+      <br/>
+      Example:
+      <pre style="margin-top:6px;">
+RTU-1|KT|120|E|18|4|3|M13|B
+RTU-2|KB|078|S|180|2|2|STD|B</pre>
+      Token meanings:
+      <ul>
+        <li><b>FAMILY</b>: KJ / KT / WP / KB</li>
+        <li><b>SIZECODE</b>: 037,049,061,078,090,102,120,150</li>
+        <li><b>HEATTYPE</b>: C (cool only) / E (electric) / N (gas Al) / S (gas SS)</li>
+        <li><b>HEATCAP</b>: if E = kW (ex 18). if N/S = MBH (ex 180)</li>
+        <li><b>VOLT</b>: 2 (208/230-3-60) / 4 (460-3-60) / 5 (575-3-60)</li>
+        <li><b>DRIVE</b>: 2 standard / 3 high static</li>
+        <li><b>FILTER</b>: STD / M8 / M13 (or leave blank)</li>
+        <li><b>DUCT</b>: B bottom / S side (or leave blank)</li>
+      </ul>
+    </div>
+
+    <textarea id="input"></textarea>
+
+    <div class="row">
+      <button class="primary" id="btnGenerate">Generate SN Checklist</button>
+      <button id="btnClear" class="ghost">Clear</button>
+      <button id="btnLoadExample">Load Example</button>
+    </div>
+  </section>
+
+  <!-- MAPPINGS -->
+  <section class="card">
+    <h2>2) Mappings (Edit Once)</h2>
+
+    <div class="small">
+      Omni Pro base catalog is preloaded below. You *can* edit, but don’t unless SN changes.
+      <br/>Future batches (economizer, curbs, controls, etc.) will expand <code>reqMap</code>.
+    </div>
+
+    <div class="grid2" style="margin-top:8px;">
+      <div>
+        <div class="small" style="margin:6px 0;">Omni Pro Catalog (JSON)</div>
+        <textarea id="catalogBox"></textarea>
+      </div>
+      <div>
+        <div class="small" style="margin:6px 0;">Requirement Map (JSON) — placeholder</div>
+        <textarea id="reqMapBox"></textarea>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="btnSaveMaps">Save Mappings to Browser</button>
+      <button id="btnLoadMaps">Load Saved Mappings</button>
+    </div>
+
+    <div class="small" style="margin-top:6px;">
+      Mappings save locally in your browser. Nothing leaves your PC.
+    </div>
+  </section>
+
+  <!-- OUTPUT -->
+  <section class="card" style="grid-column:1 / -1;">
+    <h2>3) Output</h2>
+    <pre id="output">Ready.</pre>
+    <div class="row">
+      <button id="btnCopy">Copy Output</button>
+      <button id="btnDownload">Download CSV</button>
+    </div>
+  </section>
+</main>
+
+<script>
+/* ===========================
+   OMNI PRO CATALOG (Batch #1)
+   =========================== */
+const DEFAULT_CATALOG = {
+  omniPro: {
+    families: {
+      KJ: "Pkg AC – High Eff R-454B",
+      KT: "AC Ultra-High Eff R-454B",
+      WP: "HP Std Eff R-454B",
+      KB: "AC High Eff 3-Stage R-454B"
+    },
+    sizeCodeToTons: {
+      "037": 3,
+      "049": 4,
+      "061": 5,
+      "078": 6.5,
+      "090": 7.5,
+      "102": 8.5,
+      "120": 10,
+      "150": 12.5
+    },
+    heatTypeLetters: {
+      C: "Cooling Only",
+      E: "Electric Heat",
+      N: "2-Stage Gas (Al Steel)",
+      S: "2-Stage Gas (Stainless Steel)"
+    },
+    voltageDigits: {
+      "2": "208/230-3-60",
+      "4": "460-3-60",
+      "5": "575-3-60"
+    },
+    driveDigits: {
+      "2": "Standard Drive",
+      "3": "High Static Drive"
+    },
+    filterTokens: {
+      STD: "STD Throwaway Filter",
+      M8: "2\" Pleated Filters (MERV 8)",
+      M13: "2\" Pleated Filters (MERV 13)"
+    },
+    ductTokens: {
+      B: "Bottom",
+      S: "Side"
+    }
+  }
+};
+
+// placeholder map for future batches
+const DEFAULT_REQMAP = {
+  // example:
+  // "LOW_AMBIENT": {"section":"Cooling Options","selection":"Low Ambient Kit"},
+};
+
+/* ===========================
+   STRICT OPTION-A PARSER
+   =========================== */
+function parseCompactLines(rawText){
+  const lines = rawText
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+
+  const units = [];
+  const errors = [];
+
+  for(const [idx, line] of lines.entries()){
+    const parts = line.split("|").map(p => p.trim());
+    if(parts.length < 6){
+      errors.push(`Line ${idx+1}: Not enough tokens. Got ${parts.length}, need at least 6.`);
+      continue;
+    }
+
+    const [
+      tag,
+      family,
+      sizeCode,
+      heatType,
+      heatCap,
+      volt,
+      drive = "",
+      filter = "",
+      duct = ""
+    ] = parts;
+
+    const u = {
+      tag,
+      family: family?.toUpperCase(),
+      sizeCode: String(sizeCode).padStart(3,"0"),
+      heatType: heatType?.toUpperCase(),
+      heatCap: heatCap === "" ? null : Number(heatCap),
+      voltageDigit: String(volt).trim(),
+      driveDigit: String(drive).trim() || null,
+      filter: filter?.toUpperCase() || null,
+      duct: duct?.toUpperCase() || null,
+      _line: line
+    };
+
+    units.push(u);
+  }
+
+  return {units, errors};
+}
+
+/* ===========================
+   OMNI PRO MODEL BUILDER
+   (Full Model String + Breakdown)
+   =========================== */
+function buildOmniProModelAndBreakdown(unit, omniCatalog){
+  const famDesc = omniCatalog.families[unit.family] || "Unknown Family";
+  const tons = omniCatalog.sizeCodeToTons[unit.sizeCode] ?? "Unknown Tons";
+  const heatDesc = omniCatalog.heatTypeLetters[unit.heatType] || "Unknown Heat Type";
+  const voltageDesc = omniCatalog.voltageDigits[unit.voltageDigit] || "Unknown Voltage";
+  const driveDesc = unit.driveDigit ? (omniCatalog.driveDigits[unit.driveDigit] || "Unknown Drive") : "Unknown Drive";
+
+  // heat capacity encoding
+  let heatCapTwoDigit = "00";
+  if(unit.heatType === "E" && unit.heatCap != null){
+    heatCapTwoDigit = String(unit.heatCap).padStart(2,"0");
+  }
+  if((unit.heatType === "N" || unit.heatType === "S") && unit.heatCap != null){
+    heatCapTwoDigit = String(Math.round(unit.heatCap/10)).padStart(2,"0");
+  }
+
+  const driveDigit = unit.driveDigit || "?";
+  const modelString =
+    `${unit.family}${unit.sizeCode}${unit.heatType}${heatCapTwoDigit}` +
+    `[OPTS]${unit.voltageDigit}${driveDigit}A1`;
+
+  // filter/duct friendly text
+  const filterDesc = unit.filter ? (omniCatalog.filterTokens[unit.filter] || unit.filter) : null;
+  const ductDesc = unit.duct ? (omniCatalog.ductTokens[unit.duct] || unit.duct) : null;
+
+  const breakdownLines = [
+    `MODEL: ${modelString}`,
+    `Tag: ${unit.tag}`,
+    `Family: ${unit.family} (${famDesc})`,
+    `Tonnage: ${tons} TON  (Size code ${unit.sizeCode})`,
+    `Heat Type: ${unit.heatType} (${heatDesc})`,
+    unit.heatType === "E"
+      ? `Heat Capacity: ${unit.heatCap ?? "?"} kW`
+      : (unit.heatType === "N" || unit.heatType === "S")
+        ? `Heat Capacity: ${unit.heatCap ?? "?"} MBH`
+        : `Heat Capacity: None`,
+    `Voltage: ${unit.voltageDigit} (${voltageDesc})`,
+    `Blower Drive: ${driveDigit} (${driveDesc})`,
+    filterDesc ? `Filter: ${filterDesc}` : null,
+    ductDesc ? `Duct Location: ${ductDesc}` : null,
+    `[OPTS] = SN-determined cabinet/airflow/options block`
+  ].filter(Boolean);
+
+  return { modelString, breakdown: breakdownLines.join("\n") };
+}
+
+/* ===========================
+   SN REQUIRED CHECKLIST BUILDER
+   (what to click in SN Required page)
+   =========================== */
+function buildRequiredChecklist(unit, omniCatalog){
+  const sizeLabel = `${unit.sizeCode} = ${omniCatalog.sizeCodeToTons[unit.sizeCode] ?? "?"} TON`;
+  const heatLabel = `${unit.heatType} = ${omniCatalog.heatTypeLetters[unit.heatType] ?? "?"}`;
+  const voltLabel = `${unit.voltageDigit} = ${omniCatalog.voltageDigits[unit.voltageDigit] ?? "?"}`;
+  const driveLabel = unit.driveDigit ? `${unit.driveDigit} = ${omniCatalog.driveDigits[unit.driveDigit] ?? "?"}` : "?";
+  const filterLabel = unit.filter ? (omniCatalog.filterTokens[unit.filter] || unit.filter) : "Leave default";
+  const ductLabel = unit.duct ? (omniCatalog.ductTokens[unit.duct] || unit.duct) : "Leave default";
+
+  const lines = [
+    `SN REQUIRED PAGE SELECTIONS:`,
+    `- Product Category: ${unit.family} (${omniCatalog.families[unit.family] || "?"})`,
+    `- Nominal Cooling Capacity: ${sizeLabel}`,
+    `- Heat Type: ${heatLabel}`,
+  ];
+
+  if(unit.heatType === "E"){
+    lines.push(`- Heat Capacity Clg/Electric: ${unit.heatCap ?? "?"} kW`);
+  }
+  if(unit.heatType === "N" || unit.heatType === "S"){
+    lines.push(`- Heat Capacity Gas: ${unit.heatCap ?? "?"} MBH`);
+  }
+
+  lines.push(`- Voltage: ${voltLabel}`);
+  lines.push(`- Blower Drive Option: ${driveLabel}`);
+  lines.push(`- Filter Option: ${filterLabel}`);
+  lines.push(`- Duct Location: ${ductLabel}`);
+
+  return lines.join("\n");
+}
+
+/* ===========================
+   MAIN GENERATE
+   =========================== */
+function generate(){
+  const input = document.getElementById("input").value;
+  const catalog = safeJsonParse(document.getElementById("catalogBox").value, DEFAULT_CATALOG);
+  const reqMap = safeJsonParse(document.getElementById("reqMapBox").value, DEFAULT_REQMAP);
+
+  const omni = catalog.omniPro;
+
+  const {units, errors} = parseCompactLines(input);
+
+  const out = [];
+  if(errors.length){
+    out.push("PARSER WARNINGS:");
+    out.push(errors.join("\n"));
+    out.push("\n────────────────────────\n");
+  }
+
+  if(!units.length){
+    out.push("No units detected. Paste compact line codes, one per line.");
+    setOutput(out.join("\n"));
+    return;
+  }
+
+  for(const u of units){
+    // validate minimum fields for Omni Pro generation
+    const missing = [];
+    if(!u.tag) missing.push("TAG");
+    if(!u.family) missing.push("FAMILY");
+    if(!u.sizeCode) missing.push("SIZECODE");
+    if(!u.heatType) missing.push("HEATTYPE");
+    if(!u.voltageDigit) missing.push("VOLT");
+    if(!u.driveDigit) missing.push("DRIVE");
+
+    if(missing.length){
+      out.push(`Tag ${u.tag || "(unknown)"} — missing ${missing.join(", ")}.`);
+      out.push(`RAW: ${u._line}`);
+      out.push("\n────────────────────────\n");
+      continue;
+    }
+
+    const built = buildOmniProModelAndBreakdown(u, omni);
+    out.push(built.breakdown);
+    out.push("");
+    out.push(buildRequiredChecklist(u, omni));
+
+    // future batches: requirement → SN selection map
+    if(u.codes && u.codes.length){
+      out.push("");
+      out.push("SN OPTIONS (from reqMap):");
+      for(const c of u.codes){
+        const m = reqMap[c];
+        if(m) out.push(`- ${c}: ${m.section} → ${m.selection}`);
+        else out.push(`- ${c}: (not mapped yet)`);
+      }
+    }
+
+    out.push("\n────────────────────────\n");
+  }
+
+  setOutput(out.join("\n"));
+}
+
+/* ===========================
+   UTIL
+   =========================== */
+function safeJsonParse(text, fallback){
+  try{
+    const t = (text || "").trim();
+    if(!t) return fallback;
+    return JSON.parse(t);
+  }catch(e){
+    return fallback;
+  }
+}
+function setOutput(text){
+  document.getElementById("output").textContent = text;
+}
+
+/* ===========================
+   UI WIRING
+   =========================== */
+document.getElementById("btnGenerate").addEventListener("click", generate);
+document.getElementById("btnClear").addEventListener("click", ()=>{
+  document.getElementById("input").value = "";
+  setOutput("Cleared.");
+});
+document.getElementById("btnLoadExample").addEventListener("click", ()=>{
+  document.getElementById("input").value =
+`RTU-1|KT|120|E|18|4|3|M13|B
+RTU-2|KB|078|S|180|2|2|STD|B`;
+});
+
+document.getElementById("btnCopy").addEventListener("click", async ()=>{
+  const t = document.getElementById("output").textContent;
+  try{ await navigator.clipboard.writeText(t); }
+  catch(e){}
+});
+
+document.getElementById("btnDownload").addEventListener("click", ()=>{
+  const text = document.getElementById("output").textContent;
+  const rows = text.split("\n").map(r => `"${r.replace(/"/g,'""')}"`).join("\n");
+  const blob = new Blob([rows], {type:"text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "sn_checklist.csv"; a.click();
+  URL.revokeObjectURL(url);
+});
+
+// save/load mappings localStorage
+document.getElementById("btnSaveMaps").addEventListener("click", ()=>{
+  localStorage.setItem("tm_catalog", document.getElementById("catalogBox").value);
+  localStorage.setItem("tm_reqmap", document.getElementById("reqMapBox").value);
+  setOutput("Mappings saved to browser.");
+});
+document.getElementById("btnLoadMaps").addEventListener("click", ()=>{
+  const c = localStorage.getItem("tm_catalog");
+  const r = localStorage.getItem("tm_reqmap");
+  if(c) document.getElementById("catalogBox").value = c;
+  if(r) document.getElementById("reqMapBox").value = r;
+  setOutput("Mappings loaded from browser.");
+});
+
+// init boxes
+document.getElementById("catalogBox").value = JSON.stringify(DEFAULT_CATALOG, null, 2);
+document.getElementById("reqMapBox").value = JSON.stringify(DEFAULT_REQMAP, null, 2);
+</script>
+</body>
+</html>
